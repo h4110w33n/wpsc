@@ -27,9 +27,6 @@ Turn On outlet (reagardless of previous state)
 Turn Off outlet (reagardless of previous state)
 Cycle outlet (duration set in Web UI)
 
-The required flags are
--a address
--u username
--p password
+The required flags and arguments are "-a" address, "-u" username, "-p" password.
 
 Example Usage can be found by the using the "-h" flag. 
