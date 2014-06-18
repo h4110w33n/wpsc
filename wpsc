@@ -1,0 +1,276 @@
+#!/bin/bash
+
+# Login to Ethernet Power Switch
+login() { curl -c COOKIE.TXT -d "Username=$USERNAME&Password=$PASSWORD" "http://$ADDRESS/login.tgi" >/dev/null 2>&1; }
+
+# Download data from index.htm
+get_data() { INDEX=$( curl --silent -b COOKIE.TXT "http://$ADDRESS/index.htm"); }
+
+# Scrape data from index.htm because of lack of native API
+process() 
+{
+    STATUS_LABEL=$( echo $INDEX | grep -E -o "<tr bgcolor=\"#F4F4F4\"><td align=center>[0-9]</td> <td>.{0,40}" | grep -o '<td>.*</td>' | sed 's/<td>//g' | sed 's/<\/td>/;/g' | tr ' ' '_' | sed 's/;//g')
+    STATUS=( `echo $STATUS_LABEL` )
+    for OUTLET_NUM in `seq 1 8`;
+        do
+            STATUS_OUTLET=$( echo $INDEX | grep -E -o "$OUTLET_NUM=.{0,3}" | grep 'ON\|OFF' )
+            #echo $STATUS_OUTLET
+            if [[ $STATUS_OUTLET =~ 'OFF' ]]; then
+                GLOBAL_STATUS[$OUTLET_NUM]=1
+            elif [[ $STATUS_OUTLET =~ 'ON' ]]; then
+                GLOBAL_STATUS[$OUTLET_NUM]=0
+            else
+                echo "ERROR OBTAINING STATUS";
+            fi
+    done
+    #echo $STATUS_LABEL
+    #echo ${STATUS[4]}
+    
+}
+
+# This toggles value for a given outlet. 
+toggle()
+{
+    if [[ ${GLOBAL_STATUS[$OUTLET]} == 0 ]]; then
+        curl -b COOKIE.TXT http://$ADDRESS/outlet?$OUTLET=ON >/dev/null 2>&1
+    elif [[ ${GLOBAL_STATUS[$OUTLET]} == 1 ]]; then
+        curl -b COOKIE.TXT http://$ADDRESS/outlet?$OUTLET=OFF >/dev/null 2>&1
+    else
+        echo "ERROR IN DETERMINING OUTLET TO TOGGLE"
+    fi
+}
+
+# This will turn on an outlet regardless of previous state.
+initiate() { curl -b COOKIE.TXT http://$ADDRESS/outlet?$OUTLET=ON >/dev/null 2>&1; }
+
+# This will turn off an outlet regardless of previous state.
+deactivate() { curl -b COOKIE.TXT http://$ADDRESS/outlet?$OUTLET=OFF >/dev/null 2>&1; }
+
+# This will cycle out off then back on. Duration is set within the Ethernet Power Switch
+# Web console once logged in and not though external controls. Sorry.
+cycle() { curl -b COOKIE.TXT http://$ADDRESS/outlet?$OUTLET=CCL >/dev/null 2>&1; }
+
+# This prints the status off the outlets in a form easily readable by humans.
+list_human() 
+{
+    for OUTLET_NUM in `seq 1 8`;
+        do
+            STATUS_OUTLET=${GLOBAL_STATUS[$OUTLET_NUM]}
+            if [[ $STATUS_OUTLET == 1 ]]; then
+                echo "OUTLET $OUTLET_NUM is ON  (${STATUS[$OUTLET_NUM-1]})"
+            elif [[ $STATUS_OUTLET == 0 ]]; then
+                echo "OUTLET $OUTLET_NUM is OFF (${STATUS[$OUTLET_NUM-1]})"
+            else
+                echo "ERROR OBTAINING STATUS"
+            fi
+    done
+}
+
+list_machine() 
+{   
+    echo "{"
+    for OUTLET_NUM in `seq 1 8`;
+        do
+        STATUS_OUTLET=${GLOBAL_STATUS[$OUTLET_NUM]}
+        echo -ne "\"$OUTLET_NUM\": ["
+        if [[ $STATUS_OUTLET == 1 ]]; then
+            if [[ OUTLET_NUM -ne 8 ]]; then
+                echo "{\"Name\":\"${STATUS[$OUTLET_NUM-1]}\", \"Status\":\"On\"}],"
+            else
+                echo "{\"Name\":\"${STATUS[$OUTLET_NUM-1]}\", \"Status\":\"On\"}]"
+            fi
+        elif [[ $STATUS_OUTLET == 0 ]]; then
+            if [[ OUTLET_NUM -ne 8 ]]; then
+                echo "{\"Name\":\"${STATUS[$OUTLET_NUM-1]}\", \"Status\":\"Off\"}],"
+            else   
+                echo "{\"Name\":\"${STATUS[$OUTLET_NUM-1]}\", \"Status\":\"Off\"}]"
+            fi
+        else
+            echo "ERROR OBTAINING STATUS"
+        fi
+        done
+    echo "}"  
+}
+
+# Usage/Help guide to code and intro to why this code exists
+usage()
+{
+cat << EOF
+Author: Robert Rice
+Date:   May 12, 2014
+
+This script was written for the purpose of providing a "native like" API to control
+an Ethernet Power Switch via the *nix command line. The script uses basic scraping
+of data from the built in web console to provide status. This script can be used
+with many other protocols including python and php to control the Ethernet Power
+Switch, and can even be the core of a basic home automation system. This script 
+requires libcurl to be installed on the system. It was developed on Mac OS X 10.9
+and tested on Ubuntu 14.04 LTS without any issues. It should also be noted that a 
+"COOKIE.TXT" will be created in the same directory as the script and will contain
+the login cookie for the session, therefore in order to use this script the user 
+must have write access to the folder that the scripts is being ran from.
+
+$0 Options and Examples
+
+Options:
+   -h
+        Shows This message.
+       
+   -u <username>   
+        [REQUIRED] Username field is required for login.
+        
+   -p <password>   
+        [REQUIRED] Username field is required for login.
+        
+   -a <address>
+        [REQUIRED] Address to Ethernet Power Switch for login.
+   
+   -l
+        This option will list status of all ports in form easily readable for HUMANS.
+        
+   -m
+        This option will list status of all ports in form easily readable for MACHINES.
+        
+   -t <outlet number> 
+        This option will toggle a specified outlet.   
+        
+   -c <outlet number>
+        This option works indentically to the toggle except that it will "cycle" the outlet
+        according to the cycle parameters in the Ethernet Power Switch settings.
+    
+   -d <outlet number>
+        This option is used to "deactivate" or turn off an outlet regardless of previous state.
+   
+   -i <outlet number>
+        This option is used to "initiate" or turn on an outlet regardless of previous state.
+        
+$0 Examples:
+
+   $0 -a 192.168.1.2 -u lameuser -p lamepassword -l
+        This example shows the address (192.168.1.2), user (lameuser), password (lamepassword),
+        and the option "-l" being used to list the current status of all outlets readable by a
+        human.
+        
+   $0 -a 192.168.1.2 -u lameuser -p lamepassword -m
+        This option works exactly as before but outputs the status in an array that can be used 
+        for further scripting.
+   
+   $0 -a 192.168.1.2 -u lameuser -p lameuser -m -t 8
+        This example sends a command to toggle outlet number 8, and then outputs the status as 
+        JSON (Very useful for automation and verification).
+
+   $0 -a 192.168.1.2 -u lameuser -p lameuser -i 8
+        This will turn on outlet number 8, regardless of previous state, and provides no output.
+        
+   $0 -a 192.168.1.2 -u lameuser -p lameuser -d 8
+        This will turn off outlet number 8, regardless of previous state, and provides no output.
+        
+EOF
+}
+
+# Clear all previous values for variables that will be used.
+ADDRESS=
+USERNAME=
+PASSWORD=
+OUTLET=
+TOGGLE=
+MACHINE=
+INITIATE=
+DEACTIVATE=
+
+# Get data from options using "getopts"
+while getopts "hmt:u:p:a:lc:i:d:" OPTION
+do
+    case $OPTION in
+        m)
+            MACHINE=1
+            ;;
+        h)
+            usage
+            exit 1
+            ;;
+        u)
+            USERNAME=$OPTARG
+            ;;
+        p)
+            PASSWORD=$OPTARG
+            ;;
+        a)
+            ADDRESS=$OPTARG
+            ;;
+        l)
+            LIST=1
+            ;;
+        t)
+            OUTLET=$OPTARG
+            TOGGLE=1
+            ;;
+        i)
+            OUTLET=$OPTARG
+            INITIATE=1
+            ;;
+        d)
+            OUTLET=$OPTARG
+            DEACTIVATE=1
+            ;;
+        c)
+            OUTLET=$OPTARG
+            CYCLE=1
+            ;;
+        *) 
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# GET LOGIN
+login
+
+# GET DATA/STATUS
+get_data
+
+# PROCESS DATA/STATUS (RETURNS ARRAY GLOBAL_STATUS)
+process
+
+if [[ $TOGGLE == 1 ]]
+    then
+        toggle
+        get_data
+        process
+fi
+
+if [[ $CYCLE == 1 ]]
+    then
+        cycle
+        sleep 10
+        get_data
+        process
+fi
+
+if [[ $INITIATE == 1 ]]
+    then
+        initiate
+        get_data
+        process
+fi
+
+if [[ $DEACTIVATE == 1 ]]
+    then
+        deactivate
+        get_data
+        process
+fi
+
+if [[ $LIST == 1 ]]
+    then
+        list_human
+fi
+
+if [[ $MACHINE == 1 ]]
+    then
+        list_machine
+fi
+
+#Cleans up COOKIE.TXT
+rm COOKIE.TXT
